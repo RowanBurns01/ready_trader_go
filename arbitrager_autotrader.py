@@ -23,7 +23,7 @@ from typing import List
 from ready_trader_go import BaseAutoTrader, Instrument, Lifespan, MAXIMUM_ASK, MINIMUM_BID, Side
 
 
-LOT_SIZE = 20
+LOT_SIZE = 10
 POSITION_LIMIT = 100
 TICK_SIZE_IN_CENTS = 100
 
@@ -45,6 +45,7 @@ class AutoTrader(BaseAutoTrader):
         self.bids = set()
         self.asks = set()
         self.current_future = 0
+        self.previous_spread = 0
         self.ask_id = self.ask_price = self.bid_id = self.bid_price = self.position = 0
 
     def on_error_message(self, client_order_id: int, error_message: bytes) -> None:
@@ -80,34 +81,48 @@ class AutoTrader(BaseAutoTrader):
         """
         self.logger.info("received order book for instrument %d with sequence number %d", instrument,
                          sequence_number)
+        self.logger.info("%s %s %s %s",instrument, sequence_number, ask_prices, bid_prices)
+        # 
+
+        if instrument == Instrument.FUTURE:
+            self.current_future = (ask_prices[0] + bid_prices[0]) //200
 
         if instrument == Instrument.ETF:
-            
-            price_adjustment = - (self.position // LOT_SIZE) * TICK_SIZE_IN_CENTS
-            self.logger.info(price_adjustment)
-            self.logger.info(bid_prices)
-            new_bid_price = bid_prices[0] + price_adjustment if bid_prices[0] != 0 else 0
-            new_ask_price = ask_prices[0] + price_adjustment if ask_prices[0] != 0 else 0
-            # nbp 20
-            # changed 19
-            if self.bid_id != 0 and new_bid_price not in (self.bid_price, 0): #(22, 21, 20, 0)
-                self.send_cancel_order(self.bid_id)
-                self.bid_id = 0
-            if self.ask_id != 0 and new_ask_price not in (self.ask_price, 0):
-                self.send_cancel_order(self.ask_id)
-                self.ask_id = 0
+            current_etf = (ask_prices[0] + bid_prices[0]) //200
 
-            if self.bid_id == 0 and new_bid_price != 0 and self.position < POSITION_LIMIT:
-                self.bid_id = next(self.order_ids)
-                self.bid_price = new_bid_price
-                self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, LOT_SIZE, Lifespan.GOOD_FOR_DAY)
-                self.bids.add(self.bid_id)
+            spread = self.current_future - current_etf
+            previous_spread = self.previous_spread
 
-            if self.ask_id == 0 and new_ask_price != 0 and self.position > -POSITION_LIMIT:
-                self.ask_id = next(self.order_ids)
-                self.ask_price = new_ask_price
-                self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, LOT_SIZE, Lifespan.GOOD_FOR_DAY)
-                self.asks.add(self.ask_id)
+            if spread != previous_spread:
+                
+                self.previous_spread = spread
+
+                print(f"New spread {spread}, old spread {previous_spread}")
+                print(f"Position {self.position}")
+
+                if spread > 0:
+                    # an buy etf and then hedge future
+                    if self.ask_id != 0: 
+                        self.send_cancel_order(self.ask_id)
+                    if self.bid_id != 0: 
+                        self.send_cancel_order(self.bid_id)
+                    if self.position + (LOT_SIZE*spread) < POSITION_LIMIT:
+                        self.bid_id = next(self.order_ids)
+                        self.bid_price = bid_prices[0]
+                        print("buy Order inserted %d", LOT_SIZE*spread)
+                        self.send_insert_order(self.bid_id, Side.BUY, self.bid_price, LOT_SIZE*spread, Lifespan.GOOD_FOR_DAY)
+                        self.bids.add(self.bid_id)
+                elif spread < 0:
+                    if self.bid_id != 0:
+                        self.send_cancel_order(self.bid_id)
+                    if self.ask_id != 0: 
+                        self.send_cancel_order(self.ask_id)
+                    if self.position + (LOT_SIZE*spread) > -POSITION_LIMIT:
+                        self.ask_id = next(self.order_ids)
+                        self.ask_price = ask_prices[0]
+                        print("sell Order inserted %d", LOT_SIZE*-spread)
+                        self.send_insert_order(self.ask_id, Side.SELL, self.ask_price, LOT_SIZE*-spread, Lifespan.GOOD_FOR_DAY)
+                        self.asks.add(self.ask_id)
 
     def on_order_filled_message(self, client_order_id: int, price: int, volume: int) -> None:
         """Called when when of your orders is filled, partially or fully.

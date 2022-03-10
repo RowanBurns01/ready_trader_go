@@ -1,6 +1,4 @@
-exchange.log
-info.dat
-match_events.csv
-score_board.csv
-autotrader.log
-__pycache__/autotrader.cpython-39.pyc
+*.log
+*.dat
+*.csv
+__pycache__*
